@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <include domain="sharedpref" path="."/>
+    <!-- Exclude the actual encrypted raw database keys and local assets to avoid standard leaks -->
+    <exclude domain="database" path="SecureAI.db"/>
+</full-backup-content>

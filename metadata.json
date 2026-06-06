@@ -1,0 +1,6 @@
+{
+  "name": "Local AI Studio",
+  "description": "A privacy-focused, offline-first local AI orchestrator designed to benchmark, select, and run multiple AI models locally, leverage CPU/GPU selection, and model agentic flows with encrypted storage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

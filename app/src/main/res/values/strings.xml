@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Local AI Studio</string>
+    <string name="title_dashboard">Dashboard</string>
+    <string name="title_diagnostic">Diagnostics</string>
+    <string name="title_chat">Orchestrator</string>
+    
+    <string name="error_generic">An unexpected error occurred.</string>
+    <string name="empty_models_list">No models registered in the system registry.</string>
+</resources>
