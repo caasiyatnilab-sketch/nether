@@ -1,0 +1,10 @@
+# Kotlin & Gradle build files
+.gradle
+build/
+*.iml
+.idea/
+local.properties
+
+# Secrets
+.env
+.env.*
