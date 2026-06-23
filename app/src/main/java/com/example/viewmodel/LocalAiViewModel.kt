@@ -77,10 +77,23 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
     val isRagIndexing = MutableStateFlow(false)
     val ragRetrievalResults = MutableStateFlow<List<Pair<VectorDocument, Float>>>(emptyList())
 
+    // Cache for parsed vectors to avoid O(N) string parsing on every retrieval
+    private val vectorCache = java.util.concurrent.ConcurrentHashMap<String, FloatArray>()
+
     init {
         viewModelScope.launch {
             repository.allDocumentsFlow.collect { documents ->
                 ragDocuments.value = documents
+                // Pre-warm/Sync cache: Ensure all documents in memory have their vectors parsed
+                documents.forEach { doc ->
+                    if (!vectorCache.containsKey(doc.vectorId)) {
+                        try {
+                            vectorCache[doc.vectorId] = doc.embeddingJson.split(",").map { it.toFloat() }.toFloatArray()
+                        } catch (e: Exception) {
+                            // Skip malformed entries
+                        }
+                    }
+                }
             }
         }
     }
@@ -394,6 +407,9 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
             embeddingJson = vectorJson
         )
 
+        // Optimistically update cache for speed
+        vectorCache[docId] = randomVector
+
         viewModelScope.launch(Dispatchers.IO) {
             repository.insertVectorDocument(newDoc)
             addTerminalLine("SQLITE_VSS", "Generated high-dimensional 128-float embedding. Saved vector bounds inside SQLite under id $docId.")
@@ -401,6 +417,8 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun removeRagDocument(vectorId: String) {
+        // Clear from cache
+        vectorCache.remove(vectorId)
         viewModelScope.launch(Dispatchers.IO) {
             repository.deleteVectorDocument(vectorId)
             addTerminalLine("SQLITE_VSS", "Purged document vectors [ID: $vectorId] from local database.")
@@ -427,7 +445,10 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
             val queryVector = FloatArray(128) { Random.nextFloat() }
             
             val scoredDocs = allDocs.map { doc ->
-                val embedArray = doc.embeddingJson.split(",").map { it.toFloat() }.toFloatArray()
+                // BOLT OPTIMIZATION: Use cached FloatArray to avoid expensive string splitting and parsing
+                val embedArray = vectorCache[doc.vectorId] ?: doc.embeddingJson.split(",").map { it.toFloat() }.toFloatArray().also {
+                    vectorCache[doc.vectorId] = it
+                }
                 
                 // Real Cosine Similarity calculation
                 var dotProd = 0f
