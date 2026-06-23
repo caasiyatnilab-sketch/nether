@@ -1,14 +1,14 @@
 # Native-Llama Android Orchestrator
 
-A production-ready, highly optimized, and memory-safe Android application that demonstrates local, on-device AI capabilities using a custom C++ `llama.cpp` JNI bridge alongside dynamic PC-fallback capabilities.
+An Android application that demonstrates a native C++ JNI bridge with deterministic on-device demo responses alongside dynamic PC-fallback capabilities. The checked-in native layer does not currently parse, load, or memory-map GGUF model weights.
 
 ---
 
 ## 🛠️ Performance & Architectural Design
 
 ### 1. Dual-Inference Execution Pipeline
-* **Local NDK Inference Engine**: Binds to a specialized C++ bridge (`native-lib.cpp`) utilizing a simulated `llama_context`. It manages active model weights and context streams using low-level pointers.
-* **On-Demand Memory Release (`freeContext`)**: To mitigate Native Heap memory leaks and potential Out-Of-Memory (OOM) crashes, the Jetpack Compose architecture binds the ViewModel lifecycle to an explicit C++ memory deallocation function. When the orchestrator's `LocalAiViewModel` is cleared, it triggers `LlamaCppNative.freeContext()`, which frees and nullifies mapped C++ pointer addresses.
+* **Local NDK Demo Engine**: Binds to a C++ bridge (`native-lib.cpp`) that keeps a small deterministic demo state for JNI lifecycle testing. It does not include real `llama.cpp` model/context state or GGUF memory mapping yet.
+* **On-Demand Native Context Release (`freeContext`)**: The Jetpack Compose architecture binds the ViewModel lifecycle to an explicit C++ cleanup function. When the orchestrator's `LocalAiViewModel` is cleared, it triggers `LlamaCppNative.freeContext()`, which frees the small native demo context and duplicated model-path string.
 * **Graceful Network Fallback Protocol**: JNI calls are completely isolated with dynamic `try-catch` blocks catching `UnsatisfiedLinkError` and `OutOfMemoryError`. If a native allocation fails or the local binary is unavailable:
   1. The pipeline automatically shifts the active query to the local PC-hosted **Ollama / LM Studio API**.
   2. If the PC network link is also unreachable, it routes to a **True Local Core Fallback Engine** to process structured queries with pre-cached index maps.
@@ -52,11 +52,11 @@ Follow these steps to deploy and test the native Orchestrator on physical Androi
 
 ## ⚙️ Technical Specifications & File Map
 
-* `/app/src/main/cpp/native-lib.cpp`: C++ JNI bridge mapping model allocations, direct context management, text generation algorithms, and pointer-safe cleanup routines.
+* `/app/src/main/cpp/native-lib.cpp`: C++ JNI bridge for deterministic demo responses, direct demo-context management, and pointer-safe cleanup routines. Real GGUF loading should replace the demo state with actual `llama.cpp` model/context objects before the app claims local GGUF inference.
 * `/app/src/main/cpp/CMakeLists.txt`: Compiles the native NDK library, linking basic logging capabilities for hardware metrics tracking.
 * `/app/src/main/java/com/example/data/LlamaCppNative.kt`: Kotlin JNI declaration bridge hosting safe wrapper methods and fallback error catches.
 * `/app/src/main/java/com/example/viewmodel/LocalAiViewModel.kt`: Core execution controller hosting pipeline fallback redirecting logic and VM destruction hooks.
 * `/app/build.gradle.kts`: Production-ready build configurations maintaining compact target architectures and asset shrinking profiles.
 
 ---
-The codebase is 100% frozen, optimized, verified green, and primed for immediate export and physical device deployment! 🚀
+The codebase is ready for demo deployment, with real GGUF-backed inference still requiring an actual `llama.cpp` integration.
