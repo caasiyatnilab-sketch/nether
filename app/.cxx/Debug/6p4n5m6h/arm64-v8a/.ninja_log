@@ -1,5 +1,0 @@
-# ninja log v5
-0	1683	1780739968414510385	CMakeFiles/local_ai_studio.dir/native-lib.cpp.o	3a6cbb5227b0fe5f
-1685	1805	1780739968536910366	/app/applet/app/build/intermediates/cxx/Debug/6p4n5m6h/obj/arm64-v8a/liblocal_ai_studio.so	8d2fd8483b0e44da
-66	1321	1780741731808502019	CMakeFiles/local_ai_studio.dir/native-lib.cpp.o	3a6cbb5227b0fe5f
-1322	1406	1780741731885755385	/app/applet/app/build/intermediates/cxx/Debug/6p4n5m6h/obj/arm64-v8a/liblocal_ai_studio.so	8d2fd8483b0e44da

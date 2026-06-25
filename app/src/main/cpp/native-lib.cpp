@@ -113,11 +113,11 @@ Java_com_example_data_LlamaCppNative_nativeTokenize(
 
 JNIEXPORT jstring JNICALL
 Java_com_example_data_LlamaCppNative_nativeGenerateStream(
-        JNIEnv* env, jobject, jstring prompt, jint max_tokens, jfloat temperature) {
+        JNIEnv* env, jobject thiz, jstring prompt, jint max_tokens, jfloat temperature) {
     
     // For now: same as blocking generate. In future: callback-based streaming
     return Java_com_example_data_LlamaCppNative_nativeGenerate(
-        env, nullptr, prompt, max_tokens, temperature);
+        env, thiz, prompt, max_tokens, temperature);
 }
 
 JNIEXPORT void JNICALL

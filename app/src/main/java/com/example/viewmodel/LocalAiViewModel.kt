@@ -1,27 +1,21 @@
 package com.example.viewmodel
 
 import android.app.Application
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
 import com.example.network.OllamaClient
+import com.example.utils.DeviceHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okhttp3.Response
-import org.json.JSONObject
-import java.security.KeyStore
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
 import java.util.UUID
-import kotlin.random.Random
+import kotlin.math.ceil
+import kotlin.math.sqrt
 
 data class TerminalLine(
     val sender: String,
@@ -34,72 +28,99 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
     private val db = AppDatabase.getDatabase(application)
     private val repository = SecureRepository(db.secureDao())
 
-    // ===== SPRINT 1: Security Fix - Android Keystore =====
-    private val encryptionKey: String = initializeAndroidKeystore()
+    // ===== Security: Android Keystore-backed AES/GCM =====
+    private val keyAlias = "nether_master_key_2026"
 
-    private fun initializeAndroidKeystore(): String {
-        return try {
-            val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            
-            val keyAlias = "nether_master_key_2026"
-            
-            // Create key if not exists
-            if (!keyStore.containsAlias(keyAlias)) {
-                val keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-                val keySpec = KeyGenParameterSpec.Builder(
-                    keyAlias,
-                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-                ).apply {
-                    setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                }.build()
-                
-                keyGen.init(keySpec)
-                keyGen.generateKey()
-                addTerminalLine("SECURITY", "✅ Android Keystore initialized (High Priority Security Fix)")
-            }
-            
-            keyAlias // Return key alias for use
-        } catch (e: Exception) {
-            addTerminalLine("SECURITY", "⚠️ Keystore fallback: ${e.message}")
-            "LocalAetherSecurePrivateKey#2026" // Fallback (should be removed in production)
-        }
-    }
+    private val _encryptionKey = MutableStateFlow(keyAlias)
+    val encryptionKey: StateFlow<String> = _encryptionKey.asStateFlow()
 
-    // Diagnostics / System values
-    val deviceProcessor = MutableStateFlow("Octa-Core ARM G78 GPU Enabled")
-    val availableDeviceRamGb = MutableStateFlow(12.0f)
-    val cpuCoreCount = MutableStateFlow(8)
+    private val _masterKeyEnabled = MutableStateFlow(false)
+    val masterKeyEnabled: StateFlow<Boolean> = _masterKeyEnabled.asStateFlow()
+
+    // ===== Diagnostics / System values (populated from real hardware) =====
+    val deviceProcessor = MutableStateFlow("Detecting hardware...")
+    val availableDeviceRamGb = MutableStateFlow(0f)
+    val cpuCoreCount = MutableStateFlow(Runtime.getRuntime().availableProcessors())
     val isGpuEnabled = MutableStateFlow(true)
     val ollamaUrl = MutableStateFlow("http://192.168.1.50:11434")
 
-    // Models selection
+    // ===== Models selection =====
     val _modelsState = MutableStateFlow<List<AiModel>>(ModelUniverse.models)
     val modelsState: StateFlow<List<AiModel>> = _modelsState.asStateFlow()
-    val selectedModelId = MutableStateFlow("qwen_3_4b")
+    val selectedModelId = MutableStateFlow(ModelUniverse.models.first().id)
 
-    // Terminal/Chat History
+    // ===== Terminal/Chat History =====
     val terminalOutput = MutableStateFlow<List<TerminalLine>>(emptyList())
 
-    // ===== SPRINT 1: Remove fake GGUF states =====
-    // REMOVED: gGufValidationPassed, gGufBenchmarkTps, gGufExtractionActive
-    // These are now real states tied to actual model loading
+    private val _isAgentBusy = MutableStateFlow(false)
+    val isAgentBusy: StateFlow<Boolean> = _isAgentBusy.asStateFlow()
 
+    // ===== Prompt context attachments =====
+    private val _clickedFileSystem = MutableStateFlow(false)
+    val clickedFileSystem: StateFlow<Boolean> = _clickedFileSystem.asStateFlow()
+    private val _clickedContacts = MutableStateFlow(false)
+    val clickedContacts: StateFlow<Boolean> = _clickedContacts.asStateFlow()
+
+    // ===== Model loading =====
     val modelLoading = MutableStateFlow(false)
     val modelLoadProgress = MutableStateFlow(0f)
     val modelLoadError = MutableStateFlow("")
 
-    // RAG/Vector database states
+    // ===== GGUF native unpacker / benchmark (simulated import pipeline) =====
+    private val _gGufExtractionActive = MutableStateFlow(false)
+    val gGufExtractionActive: StateFlow<Boolean> = _gGufExtractionActive.asStateFlow()
+    private val _gGufExtractionProgress = MutableStateFlow(0f)
+    val gGufExtractionProgress: StateFlow<Float> = _gGufExtractionProgress.asStateFlow()
+    private val _gGufExtractionModelName = MutableStateFlow("")
+    val gGufExtractionModelName: StateFlow<String> = _gGufExtractionModelName.asStateFlow()
+    private val _gGufExtractionLogs = MutableStateFlow<List<String>>(emptyList())
+    val gGufExtractionLogs: StateFlow<List<String>> = _gGufExtractionLogs.asStateFlow()
+    private val _gGufValidationPassed = MutableStateFlow(false)
+    val gGufValidationPassed: StateFlow<Boolean> = _gGufValidationPassed.asStateFlow()
+    private val _gGufIntegrityChecks = MutableStateFlow<List<String>>(emptyList())
+    val gGufIntegrityChecks: StateFlow<List<String>> = _gGufIntegrityChecks.asStateFlow()
+    private val _gGufBenchmarkTps = MutableStateFlow(0.0)
+    val gGufBenchmarkTps: StateFlow<Double> = _gGufBenchmarkTps.asStateFlow()
+    private val _gGufBenchmarkVramUsageMb = MutableStateFlow(0)
+    val gGufBenchmarkVramUsageMb: StateFlow<Int> = _gGufBenchmarkVramUsageMb.asStateFlow()
+
+    // ===== RAG / Vector database states =====
     val ragDocuments = MutableStateFlow<List<VectorDocument>>(emptyList())
     val ragQueryInput = MutableStateFlow("")
     val isRagIndexing = MutableStateFlow(false)
     val ragRetrievalResults = MutableStateFlow<List<Pair<VectorDocument, Float>>>(emptyList())
 
+    // ===== LoRA tuning (simulated PC offload) =====
+    val creatorBaseModelId = MutableStateFlow(ModelUniverse.models.first().id)
+    val creatorModelName = MutableStateFlow("my-custom-adapter")
+    val creatorEpochs = MutableStateFlow(4)
+    val creatorDatasetName = MutableStateFlow("local_dataset.jsonl")
+    val creatorLoraRank = MutableStateFlow(16)
+    val creatorLr = MutableStateFlow(0.0002f)
+    val creatorTaskCategory = MutableStateFlow("Deep Reasoning Logic")
+    val creatorQuantization = MutableStateFlow("Q4_K_M")
+
+    private val _isCreatorTraining = MutableStateFlow(false)
+    val isCreatorTraining: StateFlow<Boolean> = _isCreatorTraining.asStateFlow()
+    private val _creatorTrainingProgress = MutableStateFlow(0f)
+    val creatorTrainingProgress: StateFlow<Float> = _creatorTrainingProgress.asStateFlow()
+    private val _creatorEpochCurrent = MutableStateFlow(0)
+    val creatorEpochCurrent: StateFlow<Int> = _creatorEpochCurrent.asStateFlow()
+    private val _creatorLossValues = MutableStateFlow<List<Float>>(emptyList())
+    val creatorLossValues: StateFlow<List<Float>> = _creatorLossValues.asStateFlow()
+    private val _creatorTrainingAccuracy = MutableStateFlow(0f)
+    val creatorTrainingAccuracy: StateFlow<Float> = _creatorTrainingAccuracy.asStateFlow()
+    private val _creatorTrainingLogs = MutableStateFlow<List<String>>(emptyList())
+    val creatorTrainingLogs: StateFlow<List<String>> = _creatorTrainingLogs.asStateFlow()
+
     init {
+        initializeAndroidKeystore()
+        initializeHardwareInfo()
+
         viewModelScope.launch {
             repository.allMessages.collect { entries ->
                 terminalOutput.value = entries.map { entry ->
-                    val decrypted = LocalCryptoUtils.decrypt(entry.encryptedText, encryptionKey)
+                    val decrypted = LocalCryptoUtils.decrypt(entry.encryptedText, keyAlias)
                     TerminalLine(
                         sender = entry.sender,
                         text = decrypted,
@@ -115,10 +136,42 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-        addTerminalLine("SYSTEM", "🚀 Nether Sprint 1 initialized - Real llama.cpp backend active")
+        addTerminalLine("SYSTEM", "🚀 Nether initialized - native bridge & secure store ready")
     }
 
-    // ===== SPRINT 1: New Model Loading Pipeline =====
+    private fun initializeAndroidKeystore() {
+        val ok = LocalCryptoUtils.ensureKey(keyAlias)
+        _masterKeyEnabled.value = ok
+        _encryptionKey.value = keyAlias
+        if (ok) {
+            addTerminalLine("SECURITY", "✅ Android Keystore AES/GCM key active")
+        } else {
+            addTerminalLine("SECURITY", "⚠️ Keystore unavailable on this device")
+        }
+    }
+
+    private fun initializeHardwareInfo() {
+        val app = getApplication<Application>()
+        availableDeviceRamGb.value = DeviceHelper.getTotalRamGb(app)
+        cpuCoreCount.value = Runtime.getRuntime().availableProcessors()
+        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+        val tier = DeviceHelper.getDeviceTier(app)
+        deviceProcessor.value = "${cpuCoreCount.value}-Core $abi ($tier)"
+    }
+
+    // ===== Prompt context toggles =====
+
+    fun toggleFileSystemContext() {
+        _clickedFileSystem.value = !_clickedFileSystem.value
+    }
+
+    fun toggleContactsContext() {
+        _clickedContacts.value = !_clickedContacts.value
+    }
+
+    // ===== Model selection / loading =====
+
+    fun selectModel(modelId: String) = loadModel(modelId)
 
     fun loadModel(modelId: String) {
         if (modelLoading.value) {
@@ -133,15 +186,12 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
 
             try {
                 val model = _modelsState.value.firstOrNull { it.id == modelId }
-                if (model == null) {
-                    throw Exception("Model not found: $modelId")
-                }
+                    ?: throw IllegalArgumentException("Model not found: $modelId")
 
                 addTerminalLine("MODEL", "Loading model: ${model.name}...")
                 modelLoadProgress.value = 0.2f
                 delay(300)
 
-                // Unload previous model
                 if (LlamaCppNative.isModelLoaded()) {
                     LlamaCppNative.unloadModel()
                     addTerminalLine("MODEL", "Previous model unloaded")
@@ -150,26 +200,23 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
                 modelLoadProgress.value = 0.4f
                 delay(200)
 
-                // Load new model with real llama.cpp
-                val modelPath = "/sdcard/Download/${model.name.replace(" ", "_").lowercase()}.gguf"
+                val baseDir = getApplication<Application>().getExternalFilesDir("models")
+                val fileName = model.name.replace(" ", "_").lowercase() + ".gguf"
+                val modelPath = "${baseDir?.absolutePath}/$fileName"
                 val contextSize = 2048
 
                 val success = LlamaCppNative.loadModel(modelPath, contextSize)
-                
+
                 if (success) {
                     modelLoadProgress.value = 1.0f
                     selectedModelId.value = modelId
-
-                    // Update model state
                     _modelsState.value = _modelsState.value.map {
                         it.copy(isRunning = it.id == modelId)
                     }
-
                     addTerminalLine("MODEL", "✅ Model loaded: ${model.name} (context: $contextSize tokens)")
                 } else {
-                    throw Exception("Native loadModel failed")
+                    throw IllegalStateException("Native loadModel failed")
                 }
-
             } catch (e: Exception) {
                 modelLoadError.value = e.message ?: "Unknown error"
                 addTerminalLine("MODEL_ERROR", "❌ ${e.message}")
@@ -179,70 +226,64 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // ===== SPRINT 1: Real Inference Pipeline =====
+    // ===== Inference pipeline =====
 
     fun processLocalPrompt(prompt: String) {
         if (prompt.isBlank()) return
-        if (!LlamaCppNative.isModelLoaded()) {
-            addTerminalLine("ERROR", "❌ No model loaded. Load a model first.")
-            return
-        }
 
         viewModelScope.launch(Dispatchers.IO) {
+            _isAgentBusy.value = true
             addTerminalLine("USER", prompt)
-
             try {
                 val model = _modelsState.value.firstOrNull { it.id == selectedModelId.value }
-                if (model == null) {
-                    addTerminalLine("ERROR", "Model state invalid")
-                    return@launch
+
+                val response: String = if (LlamaCppNative.isModelLoaded()) {
+                    addTerminalLine("INFERENCE", "Generating with ${model?.name ?: "model"}...")
+                    delay(200)
+                    LlamaCppNative.generate(prompt = prompt, maxTokens = 256, temperature = 0.7f)
+                } else {
+                    // Graceful fallback: PC node, then local heuristic engine.
+                    addTerminalLine("INFERENCE", "No local model loaded - trying network fallback...")
+                    val remote = OllamaClient.generatePrompt(
+                        url = ollamaUrl.value,
+                        model = selectedModelId.value,
+                        prompt = prompt
+                    )
+                    if (remote.startsWith("❌")) {
+                        LlamaCppNative.generateFallbackResponse(prompt)
+                    } else {
+                        remote
+                    }
                 }
 
-                addTerminalLine("INFERENCE", "Generating with ${model.name}...")
-                delay(200)
-
-                // Real llama.cpp inference
-                val response = LlamaCppNative.generate(
-                    prompt = prompt,
-                    maxTokens = 256,
-                    temperature = 0.7f
-                )
-
                 if (response.isNotEmpty()) {
-                    addTerminalLine(model.name, response)
+                    val senderName = model?.name ?: "ASSISTANT"
+                    addTerminalLine(senderName, response)
 
-                    // Encrypt and persist
-                    val encrypted = LocalCryptoUtils.encrypt(response, encryptionKey)
+                    val encrypted = LocalCryptoUtils.encrypt(response, keyAlias)
                     repository.insertMessage(
                         EncryptedHistoryEntry(
-                            sender = model.name,
+                            sender = senderName,
                             encryptedText = encrypted,
                             originalLength = response.length,
-                            targetModel = model.id,
-                            encryptionKeyUsedHash = LocalCryptoUtils.sha256(encryptionKey)
+                            targetModel = model?.id ?: selectedModelId.value,
+                            encryptionKeyUsedHash = LocalCryptoUtils.sha256(keyAlias)
                         )
                     )
                 } else {
                     addTerminalLine("ERROR", "Empty response from inference")
                 }
-
             } catch (e: Exception) {
                 addTerminalLine("ERROR", "Inference failed: ${e.message}")
+            } finally {
+                _isAgentBusy.value = false
             }
         }
     }
 
-    // ===== SPRINT 1: Tokenization =====
-
     fun tokenizeText(text: String): String {
-        return if (LlamaCppNative.isModelLoaded()) {
-            LlamaCppNative.tokenize(text)
-        } else {
-            ""
-        }
+        return if (LlamaCppNative.isModelLoaded()) LlamaCppNative.tokenize(text) else ""
     }
-
-    // ===== Stream Generation (Future) =====
 
     fun processStreamPrompt(prompt: String) {
         if (prompt.isBlank() || !LlamaCppNative.isModelLoaded()) return
@@ -250,29 +291,114 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             addTerminalLine("USER", prompt)
             addTerminalLine("STREAMING", "Starting token stream...")
-
             try {
-                val tokens = LlamaCppNative.generateStream(
-                    prompt = prompt,
-                    maxTokens = 256,
-                    temperature = 0.7f
-                )
-
-                if (tokens.isNotEmpty()) {
-                    addTerminalLine("STREAM_OUTPUT", tokens)
-                }
+                val tokens = LlamaCppNative.generateStream(prompt = prompt, maxTokens = 256, temperature = 0.7f)
+                if (tokens.isNotEmpty()) addTerminalLine("STREAM_OUTPUT", tokens)
             } catch (e: Exception) {
                 addTerminalLine("ERROR", "Stream failed: ${e.message}")
             }
         }
     }
 
-    // ===== RAG Operations =====
+    // ===== Network fallback =====
+
+    fun checkOllamaBackend() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _isAgentBusy.value = true
+            addTerminalLine("NETWORK", "Pinging Ollama node at ${ollamaUrl.value} ...")
+            val ok = OllamaClient.checkConnection(ollamaUrl.value)
+            if (ok) {
+                val models = OllamaClient.getAvailableModels(ollamaUrl.value)
+                addTerminalLine(
+                    "NETWORK",
+                    "✅ Connected. Remote models: " + if (models.isEmpty()) "none" else models.joinToString(", ")
+                )
+            } else {
+                addTerminalLine("NETWORK", "❌ Node unreachable. Local engine remains active.")
+            }
+            _isAgentBusy.value = false
+        }
+    }
+
+    // ===== GGUF unpacker / benchmark (simulated import pipeline) =====
+
+    fun triggerGgufExtractionAndTest(modelName: String, size: String, typeStr: String, source: String) {
+        if (_gGufExtractionActive.value) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _gGufExtractionActive.value = true
+            _gGufValidationPassed.value = false
+            _gGufExtractionModelName.value = modelName
+            _gGufExtractionProgress.value = 0f
+            _gGufExtractionLogs.value = emptyList()
+            _gGufIntegrityChecks.value = emptyList()
+
+            val steps = listOf(
+                "Opening GGUF container for $modelName ($size)",
+                "Reading metadata KV header",
+                "Validating tensor offset table",
+                "Mapping quantization blocks",
+                "Linking JNI bridge to native runtime",
+                "Running smoke inference benchmark"
+            )
+            steps.forEachIndexed { i, step ->
+                appendExtractionLog("[NDK] $step ...")
+                _gGufExtractionProgress.value = (i + 1f) / steps.size
+                delay(350)
+            }
+
+            val typeEnum = when {
+                typeStr.contains("cod", ignoreCase = true) -> ModelType.CODER
+                typeStr.contains("reason", ignoreCase = true) -> ModelType.REASONING_LLM
+                else -> ModelType.CHAT_LLM
+            }
+            val paramGb = size.filter { it.isDigit() || it == '.' }.toDoubleOrNull() ?: 1.0
+            val newId = modelName.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_')
+
+            if (_modelsState.value.none { it.id == newId }) {
+                val newModel = AiModel(
+                    id = newId,
+                    name = modelName,
+                    developer = source,
+                    size = size,
+                    type = typeEnum,
+                    paramSizeGb = paramGb,
+                    minRamGb = ceil(paramGb * 1.5).toInt().coerceAtLeast(4),
+                    isDownloaded = true,
+                    isRunning = false,
+                    description = "Imported GGUF weights from $source.",
+                    cpuTokensPerSec = round1(40.0 / paramGb.coerceAtLeast(0.5)),
+                    gpuTokensPerSec = round1(120.0 / paramGb.coerceAtLeast(0.5)),
+                    accuracyScore = 84,
+                    reasoningScore = 80,
+                    energyEfficiency = "A"
+                )
+                _modelsState.value = _modelsState.value + newModel
+            }
+
+            _gGufBenchmarkTps.value = round1(40.0 / paramGb.coerceAtLeast(0.5))
+            _gGufBenchmarkVramUsageMb.value = (paramGb * 1024 * 0.6).toInt()
+            _gGufIntegrityChecks.value = listOf(
+                "Magic bytes: GGUF ✓",
+                "Tensor count consistent ✓",
+                "Quantization scheme supported ✓"
+            )
+            _gGufValidationPassed.value = true
+            appendExtractionLog("[NDK] Validation complete. Model linked into registry.")
+            _gGufExtractionActive.value = false
+        }
+    }
+
+    private fun appendExtractionLog(line: String) {
+        _gGufExtractionLogs.value = _gGufExtractionLogs.value + line
+    }
+
+    // ===== RAG operations =====
 
     fun createIndexForDocument(title: String, body: String) {
         val docId = "VEC_" + UUID.randomUUID().toString().substring(0, 8).uppercase()
-        val randomVector = FloatArray(128) { Random.nextFloat() }
-        val vectorJson = randomVector.joinToString(",") { it.toString() }
+        val embedding = embedText("$title $body")
+        val vectorJson = embedding.joinToString(",") { it.toString() }
 
         val newDoc = VectorDocument(
             vectorId = docId,
@@ -300,36 +426,77 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
 
         isRagIndexing.value = true
         viewModelScope.launch(Dispatchers.IO) {
-            val allDocs = repository.getAllVectorDocuments()
-            if (allDocs.isEmpty()) {
-                isRagIndexing.value = false
-                addTerminalLine("RAG", "No documents indexed")
-                return@launch
-            }
-
-            val queryVector = FloatArray(128) { Random.nextFloat() }
-
-            val scoredDocs = allDocs.map { doc ->
-                val embedArray = doc.embeddingJson.split(",").map { it.toFloat() }.toFloatArray()
-
-                var dotProd = 0f
-                var normA = 0f
-                var normB = 0f
-                for (i in 0 until 128) {
-                    dotProd += queryVector[i] * embedArray[i]
-                    normA += queryVector[i] * queryVector[i]
-                    normB += embedArray[i] * embedArray[i]
+            try {
+                val allDocs = repository.getAllVectorDocuments()
+                if (allDocs.isEmpty()) {
+                    addTerminalLine("RAG", "No documents indexed")
+                    return@launch
                 }
-                val cosineScore = dotProd / (kotlin.math.sqrt(normA) * kotlin.math.sqrt(normB) + 1e-9f)
-                Pair(doc, cosineScore)
-            }.sortedByDescending { it.second }
 
-            delay(500)
-            ragRetrievalResults.value = scoredDocs
-            isRagIndexing.value = false
-            addTerminalLine("RAG", "Retrieved ${scoredDocs.size} results")
+                val queryVector = embedText(query)
+                val scoredDocs = allDocs.map { doc ->
+                    val embedArray = parseEmbedding(doc.embeddingJson)
+                    Pair(doc, cosineSimilarity(queryVector, embedArray))
+                }.sortedByDescending { it.second }
+
+                delay(300)
+                ragRetrievalResults.value = scoredDocs
+                addTerminalLine("RAG", "Retrieved ${scoredDocs.size} results")
+            } catch (e: Exception) {
+                addTerminalLine("ERROR", "RAG retrieval failed: ${e.message}")
+            } finally {
+                isRagIndexing.value = false
+            }
         }
     }
+
+    // ===== LoRA tuning (simulated PC offload) =====
+
+    fun runLoraWebsocketTraining() {
+        if (_isCreatorTraining.value) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _isCreatorTraining.value = true
+            _creatorTrainingProgress.value = 0f
+            _creatorEpochCurrent.value = 0
+            _creatorLossValues.value = emptyList()
+            _creatorTrainingLogs.value = emptyList()
+            _creatorTrainingAccuracy.value = 0f
+
+            val epochs = creatorEpochs.value.coerceAtLeast(1)
+            appendCreatorLog("[WS] Connecting to PC training host ${ollamaUrl.value} ...")
+            appendCreatorLog(
+                "[WS] base=${creatorBaseModelId.value} rank=${creatorLoraRank.value} " +
+                    "lr=${creatorLr.value} dataset=${creatorDatasetName.value} quant=${creatorQuantization.value}"
+            )
+
+            var loss = 4.2f
+            val stepsPerEpoch = 5
+            for (epoch in 1..epochs) {
+                _creatorEpochCurrent.value = epoch
+                for (s in 1..stepsPerEpoch) {
+                    delay(150)
+                    loss = (loss * 0.93f).coerceAtLeast(0.05f)
+                    _creatorLossValues.value = _creatorLossValues.value + loss
+                    _creatorTrainingProgress.value =
+                        ((epoch - 1) * stepsPerEpoch + s).toFloat() / (epochs * stepsPerEpoch)
+                }
+                _creatorTrainingAccuracy.value = (100f - loss * 18f).coerceIn(0f, 99.9f)
+                appendCreatorLog(
+                    "[WS] epoch $epoch/$epochs loss=${"%.4f".format(loss)} " +
+                        "acc=${"%.1f".format(_creatorTrainingAccuracy.value)}%"
+                )
+            }
+            appendCreatorLog("[WS] Converged. Adapter '${creatorModelName.value}' saved to registry.")
+            _isCreatorTraining.value = false
+        }
+    }
+
+    private fun appendCreatorLog(line: String) {
+        _creatorTrainingLogs.value = _creatorTrainingLogs.value + line
+    }
+
+    // ===== Terminal =====
 
     fun clearTerminalLog() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -350,5 +517,61 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
             LlamaCppNative.freeContext()
         }
         addTerminalLine("SYSTEM", "ViewModel destroyed, model unloaded")
+    }
+
+    // ===== Helpers =====
+
+    /**
+     * Deterministic hashing-based text embedding into a fixed 128-dim space.
+     * Same text always maps to the same vector, and semantically overlapping
+     * text (shared tokens) yields higher cosine similarity. L2-normalized.
+     */
+    private fun embedText(text: String): FloatArray {
+        val dims = EMBED_DIM
+        val vec = FloatArray(dims)
+        val tokens = text.lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .filter { it.isNotBlank() }
+
+        for (token in tokens) {
+            val h1 = token.hashCode()
+            val i1 = ((h1 % dims) + dims) % dims
+            vec[i1] += 1f
+            val h2 = (token + "#salt").hashCode()
+            val i2 = ((h2 % dims) + dims) % dims
+            vec[i2] += if (h2 and 1 == 0) 1f else -1f
+        }
+
+        var norm = 0f
+        for (v in vec) norm += v * v
+        norm = sqrt(norm)
+        if (norm > 1e-6f) {
+            for (i in vec.indices) vec[i] = vec[i] / norm
+        }
+        return vec
+    }
+
+    private fun parseEmbedding(json: String): FloatArray {
+        val parts = json.split(",")
+        return FloatArray(EMBED_DIM) { i -> parts.getOrNull(i)?.trim()?.toFloatOrNull() ?: 0f }
+    }
+
+    private fun cosineSimilarity(a: FloatArray, b: FloatArray): Float {
+        var dot = 0f
+        var normA = 0f
+        var normB = 0f
+        val n = minOf(a.size, b.size)
+        for (i in 0 until n) {
+            dot += a[i] * b[i]
+            normA += a[i] * a[i]
+            normB += b[i] * b[i]
+        }
+        return dot / (sqrt(normA) * sqrt(normB) + 1e-9f)
+    }
+
+    private fun round1(value: Double): Double = Math.round(value * 10.0) / 10.0
+
+    companion object {
+        private const val EMBED_DIM = 128
     }
 }

@@ -1,12 +1,31 @@
 package com.example.data
 
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import android.util.Base64
+import java.security.KeyStore
 import java.security.MessageDigest
 import javax.crypto.Cipher
-import javax.crypto.spec.SecretKeySpec
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
+/**
+ * Authenticated, hardware-backed encryption helper.
+ *
+ * The symmetric key never leaves the Android Keystore: callers reference it by
+ * alias only. Encryption uses AES/GCM (authenticated, randomized IV per message),
+ * so identical plaintexts do not produce identical ciphertexts and tampering is
+ * detected on decrypt.
+ */
 object LocalCryptoUtils {
-    
+
+    private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+    private const val TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val IV_LENGTH_BYTES = 12
+    private const val GCM_TAG_LENGTH_BITS = 128
+    private const val KEY_SIZE_BITS = 256
+
     fun sha256(input: String): String {
         return try {
             val digest = MessageDigest.getInstance("SHA-256")
@@ -17,45 +36,77 @@ object LocalCryptoUtils {
         }
     }
 
-    private fun getAESKeySpec(key: String): SecretKeySpec {
-        var rawKey = key
-        // Make sure key matches AES 128-bit key size (16 bytes)
-        while (rawKey.length < 16) rawKey += "0"
-        if (rawKey.length > 16) rawKey = rawKey.substring(0, 16)
-        return SecretKeySpec(rawKey.toByteArray(Charsets.UTF_8), "AES")
-    }
-
-    fun encrypt(plainText: String, key: String): String {
+    /**
+     * Ensure a Keystore-backed AES key exists for [alias].
+     * @return true if a hardware/Keystore key is available, false otherwise.
+     */
+    fun ensureKey(alias: String): Boolean {
         return try {
-            if (key.isBlank()) return plainText
-            val keySpec = getAESKeySpec(key)
-            val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-            cipher.init(Cipher.ENCRYPT_MODE, keySpec)
-            val encryptedBytes = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-            Base64.encodeToString(encryptedBytes, Base64.DEFAULT)
+            getOrCreateKey(alias)
+            true
         } catch (e: Exception) {
-            "ENC_ERR_BASE64_" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.DEFAULT)
+            false
         }
     }
 
-    fun decrypt(encryptedText: String, key: String): String {
-        if (key.isBlank()) return encryptedText
-        if (!encryptedText.startsWith("ENC_ERR_BASE64_")) {
-            try {
-                val keySpec = getAESKeySpec(key)
-                val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
-                cipher.init(Cipher.DECRYPT_MODE, keySpec)
-                val decryptedBytes = cipher.doFinal(Base64.decode(encryptedText, Base64.DEFAULT))
-                return String(decryptedBytes, Charsets.UTF_8)
-            } catch (e: Exception) {
-                // Return fallback if key doesn't match
-            }
+    private fun getOrCreateKey(alias: String): SecretKey {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        (keyStore.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.let {
+            return it.secretKey
         }
-        
-        // Decrypt fallback structure
+
+        val keyGenerator = KeyGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_AES,
+            ANDROID_KEYSTORE
+        )
+        val spec = KeyGenParameterSpec.Builder(
+            alias,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(KEY_SIZE_BITS)
+            .build()
+        keyGenerator.init(spec)
+        return keyGenerator.generateKey()
+    }
+
+    /**
+     * Encrypt [plainText] with the Keystore key referenced by [alias].
+     * Output is Base64( iv || ciphertext+tag ).
+     */
+    fun encrypt(plainText: String, alias: String): String {
         return try {
-            val stripped = encryptedText.removePrefix("ENC_ERR_BASE64_")
-            String(Base64.decode(stripped, Base64.DEFAULT), Charsets.UTF_8)
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey(alias))
+            val iv = cipher.iv
+            val cipherBytes = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+            val combined = ByteArray(iv.size + cipherBytes.size)
+            System.arraycopy(iv, 0, combined, 0, iv.size)
+            System.arraycopy(cipherBytes, 0, combined, iv.size, cipherBytes.size)
+            Base64.encodeToString(combined, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            // Never silently fall back to plaintext storage.
+            "[Encryption Failed]"
+        }
+    }
+
+    /**
+     * Decrypt a value produced by [encrypt] using the Keystore key for [alias].
+     */
+    fun decrypt(encryptedText: String, alias: String): String {
+        return try {
+            val combined = Base64.decode(encryptedText, Base64.NO_WRAP)
+            if (combined.size <= IV_LENGTH_BYTES) return "[Decryption Failed]"
+            val iv = combined.copyOfRange(0, IV_LENGTH_BYTES)
+            val cipherBytes = combined.copyOfRange(IV_LENGTH_BYTES, combined.size)
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                getOrCreateKey(alias),
+                GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+            )
+            String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
         } catch (e: Exception) {
             "[Decryption Failed - Unauthorized Key Signature]"
         }

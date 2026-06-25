@@ -30,6 +30,8 @@ fun DashboardScreen(viewModel: LocalAiViewModel) {
     val activeModelId by viewModel.selectedModelId.collectAsState()
     val isGpuEnabled by viewModel.isGpuEnabled.collectAsState()
     val ollamaUrl by viewModel.ollamaUrl.collectAsState()
+    val cpuCoreCount by viewModel.cpuCoreCount.collectAsState()
+    val deviceRamGb by viewModel.availableDeviceRamGb.collectAsState()
     
     // Unpacker dialog / input state
     var showUnpackerDialog by remember { mutableStateOf(false) }
@@ -154,7 +156,7 @@ fun DashboardScreen(viewModel: LocalAiViewModel) {
                                     color = Color.White.copy(alpha = 0.6f)
                                 )
                                 Text(
-                                    text = "8 Core ARM NEON Ready",
+                                    text = "$cpuCoreCount Core ARM NEON Ready",
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White
@@ -167,7 +169,7 @@ fun DashboardScreen(viewModel: LocalAiViewModel) {
                                     color = Color.White.copy(alpha = 0.6f)
                                 )
                                 Text(
-                                    text = "12.0 GB Hardware Limit",
+                                    text = "${String.format("%.1f", deviceRamGb)} GB Hardware Limit",
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White
