@@ -21,7 +21,9 @@ import kotlin.math.sqrt
 data class TerminalLine(
     val sender: String,
     val text: String,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val role: ChatRole = ChatRole.SYSTEM,
+    val modelId: String? = null
 )
 
 class LocalAiViewModel(application: Application) : AndroidViewModel(application) {
@@ -40,7 +42,7 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
 
     // ===== Diagnostics / System values (populated from real hardware) =====
     val deviceProcessor = MutableStateFlow("Detecting hardware...")
-    val availableDeviceRamGb = MutableStateFlow(0f)
+    val deviceTotalRamGb = MutableStateFlow(0f)
     val cpuCoreCount = MutableStateFlow(Runtime.getRuntime().availableProcessors())
     val isGpuEnabled = MutableStateFlow(true)
     val ollamaUrl = MutableStateFlow("http://192.168.1.50:11434")
@@ -56,11 +58,14 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
     private val _isAgentBusy = MutableStateFlow(false)
     val isAgentBusy: StateFlow<Boolean> = _isAgentBusy.asStateFlow()
 
-    // ===== Prompt context attachments =====
-    private val _clickedFileSystem = MutableStateFlow(false)
-    val clickedFileSystem: StateFlow<Boolean> = _clickedFileSystem.asStateFlow()
-    private val _clickedContacts = MutableStateFlow(false)
-    val clickedContacts: StateFlow<Boolean> = _clickedContacts.asStateFlow()
+    // ===== Prompt context: Retrieval-Augmented Generation =====
+    // When enabled, each prompt is matched against the local vector store and the
+    // closest indexed documents are injected into the model context.
+    private val _ragContextEnabled = MutableStateFlow(false)
+    val ragContextEnabled: StateFlow<Boolean> = _ragContextEnabled.asStateFlow()
+    // Titles of the documents that augmented the most recent prompt (for UI).
+    private val _lastRagContextUsed = MutableStateFlow<List<String>>(emptyList())
+    val lastRagContextUsed: StateFlow<List<String>> = _lastRagContextUsed.asStateFlow()
 
     // ===== Model loading =====
     val modelLoading = MutableStateFlow(false)
@@ -126,7 +131,9 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
                 TerminalLine(
                     sender = entry.sender,
                     text = LocalCryptoUtils.decrypt(entry.encryptedText, keyAlias),
-                    timestamp = entry.timestamp
+                    timestamp = entry.timestamp,
+                    role = runCatching { ChatRole.valueOf(entry.role) }.getOrDefault(ChatRole.ASSISTANT),
+                    modelId = entry.targetModel
                 )
             }
             if (history.isNotEmpty()) {
@@ -156,7 +163,7 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
 
     private fun initializeHardwareInfo() {
         val app = getApplication<Application>()
-        availableDeviceRamGb.value = DeviceHelper.getTotalRamGb(app)
+        deviceTotalRamGb.value = DeviceHelper.getTotalRamGb(app)
         cpuCoreCount.value = Runtime.getRuntime().availableProcessors()
         val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
         val tier = DeviceHelper.getDeviceTier(app)
@@ -165,12 +172,8 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
 
     // ===== Prompt context toggles =====
 
-    fun toggleFileSystemContext() {
-        _clickedFileSystem.value = !_clickedFileSystem.value
-    }
-
-    fun toggleContactsContext() {
-        _clickedContacts.value = !_clickedContacts.value
+    fun toggleRagContext() {
+        _ragContextEnabled.value = !_ragContextEnabled.value
     }
 
     // ===== Model selection / loading =====
@@ -195,6 +198,15 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
                 addTerminalLine("MODEL", "Loading model: ${model.name}...")
                 modelLoadProgress.value = 0.2f
                 delay(300)
+
+                if (!model.isDownloaded) {
+                    addTerminalLine("MODEL", "Weights not cached - fetching ${model.size} for ${model.name}...")
+                    modelLoadProgress.value = 0.3f
+                    delay(400)
+                    _modelsState.value = _modelsState.value.map {
+                        if (it.id == modelId) it.copy(isDownloaded = true) else it
+                    }
+                }
 
                 if (LlamaCppNative.isModelLoaded()) {
                     LlamaCppNative.unloadModel()
@@ -238,24 +250,42 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch(Dispatchers.IO) {
             _isAgentBusy.value = true
-            addTerminalLine("USER", prompt)
+            addTerminalLine("USER", prompt, role = ChatRole.USER)
+            persistTurn("USER", prompt, ChatRole.USER, selectedModelId.value)
             try {
                 val model = _modelsState.value.firstOrNull { it.id == selectedModelId.value }
+
+                // Retrieval-Augmented Generation: pull the closest indexed docs into context.
+                var augmentedPrompt = prompt
+                if (_ragContextEnabled.value) {
+                    val matches = topRagMatches(prompt, 2)
+                    if (matches.isNotEmpty()) {
+                        _lastRagContextUsed.value = matches.map { it.first.title }
+                        val ctx = matches.joinToString("\n") { "- ${it.first.title}: ${it.first.chunkText}" }
+                        augmentedPrompt = "Context:\n$ctx\n\nUser: $prompt"
+                        addTerminalLine("RAG", "Injected ${matches.size} context doc(s): " + matches.joinToString(", ") { it.first.title })
+                    } else {
+                        _lastRagContextUsed.value = emptyList()
+                        addTerminalLine("RAG", "No indexed documents matched - answering without context")
+                    }
+                } else {
+                    _lastRagContextUsed.value = emptyList()
+                }
 
                 val response: String = if (LlamaCppNative.isModelLoaded()) {
                     addTerminalLine("INFERENCE", "Generating with ${model?.name ?: "model"}...")
                     delay(200)
-                    LlamaCppNative.generate(prompt = prompt, maxTokens = 256, temperature = 0.7f)
+                    LlamaCppNative.generate(prompt = augmentedPrompt, maxTokens = 256, temperature = 0.7f)
                 } else {
                     // Graceful fallback: PC node, then local heuristic engine.
                     addTerminalLine("INFERENCE", "No local model loaded - trying network fallback...")
                     val remote = OllamaClient.generatePrompt(
                         url = ollamaUrl.value,
                         model = selectedModelId.value,
-                        prompt = prompt
+                        prompt = augmentedPrompt
                     )
                     if (remote.startsWith("❌")) {
-                        LlamaCppNative.generateFallbackResponse(prompt)
+                        LlamaCppNative.generateFallbackResponse(augmentedPrompt)
                     } else {
                         remote
                     }
@@ -263,18 +293,9 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
 
                 if (response.isNotEmpty()) {
                     val senderName = model?.name ?: "ASSISTANT"
-                    addTerminalLine(senderName, response)
-
-                    val encrypted = LocalCryptoUtils.encrypt(response, keyAlias)
-                    repository.insertMessage(
-                        EncryptedHistoryEntry(
-                            sender = senderName,
-                            encryptedText = encrypted,
-                            originalLength = response.length,
-                            targetModel = model?.id ?: selectedModelId.value,
-                            encryptionKeyUsedHash = LocalCryptoUtils.sha256(keyAlias)
-                        )
-                    )
+                    val modelId = model?.id ?: selectedModelId.value
+                    addTerminalLine(senderName, response, role = ChatRole.ASSISTANT, modelId = modelId)
+                    persistTurn(senderName, response, ChatRole.ASSISTANT, modelId)
                 } else {
                     addTerminalLine("ERROR", "Empty response from inference")
                 }
@@ -286,23 +307,29 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun tokenizeText(text: String): String {
-        return if (LlamaCppNative.isModelLoaded()) LlamaCppNative.tokenize(text) else ""
+    private suspend fun persistTurn(sender: String, text: String, role: ChatRole, modelId: String) {
+        val encrypted = LocalCryptoUtils.encrypt(text, keyAlias)
+        repository.insertMessage(
+            EncryptedHistoryEntry(
+                sender = sender,
+                encryptedText = encrypted,
+                originalLength = text.length,
+                targetModel = modelId,
+                encryptionKeyUsedHash = LocalCryptoUtils.sha256(keyAlias),
+                role = role.name
+            )
+        )
     }
 
-    fun processStreamPrompt(prompt: String) {
-        if (prompt.isBlank() || !LlamaCppNative.isModelLoaded()) return
-
-        viewModelScope.launch(Dispatchers.IO) {
-            addTerminalLine("USER", prompt)
-            addTerminalLine("STREAMING", "Starting token stream...")
-            try {
-                val tokens = LlamaCppNative.generateStream(prompt = prompt, maxTokens = 256, temperature = 0.7f)
-                if (tokens.isNotEmpty()) addTerminalLine("STREAM_OUTPUT", tokens)
-            } catch (e: Exception) {
-                addTerminalLine("ERROR", "Stream failed: ${e.message}")
-            }
-        }
+    private suspend fun topRagMatches(query: String, k: Int): List<Pair<VectorDocument, Float>> {
+        val allDocs = repository.getAllVectorDocuments()
+        if (allDocs.isEmpty()) return emptyList()
+        val queryVector = embedText(query)
+        return allDocs.map { doc ->
+            Pair(doc, cosineSimilarity(queryVector, parseEmbedding(doc.embeddingJson)))
+        }.filter { it.second > 0f }
+            .sortedByDescending { it.second }
+            .take(k)
     }
 
     // ===== Network fallback =====
@@ -504,14 +531,21 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
     // ===== Terminal =====
 
     fun clearTerminalLog() {
+        terminalOutput.value = emptyList()
+        _lastRagContextUsed.value = emptyList()
         viewModelScope.launch(Dispatchers.IO) {
             repository.clearChatHistory()
-            addTerminalLine("SYSTEM", "Terminal history cleared")
         }
+        addTerminalLine("SYSTEM", "Conversation cleared")
     }
 
-    fun addTerminalLine(sender: String, message: String) {
-        val line = TerminalLine(sender = sender, text = message)
+    fun addTerminalLine(
+        sender: String,
+        message: String,
+        role: ChatRole = ChatRole.SYSTEM,
+        modelId: String? = null
+    ) {
+        val line = TerminalLine(sender = sender, text = message, role = role, modelId = modelId)
         terminalOutput.value = terminalOutput.value + line
     }
 

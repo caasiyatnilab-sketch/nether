@@ -13,6 +13,8 @@ data class EncryptedHistoryEntry(
     val originalLength: Int,
     val targetModel: String,
     val encryptionKeyUsedHash: String,
+    // ChatRole.name (USER / ASSISTANT). Only conversation turns are persisted.
+    val role: String = ChatRole.ASSISTANT.name,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -52,9 +54,10 @@ interface SecureDao {
 }
 
 // 4. Abstract Room Database
-// version bumped 2 -> 3: encryption scheme changed (AES/ECB -> Keystore AES/GCM);
-// old ciphertext is undecryptable, so force a destructive migration of stale rows.
-@Database(entities = [EncryptedHistoryEntry::class, VectorDocument::class], version = 3, exportSchema = false)
+// version bumped 3 -> 4: chat_history gained a `role` column so both user prompts
+// and assistant replies persist as a single conversation thread. Rows from older
+// schemas can't be mapped cleanly, so a destructive migration is acceptable here.
+@Database(entities = [EncryptedHistoryEntry::class, VectorDocument::class], version = 4, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun secureDao(): SecureDao
 

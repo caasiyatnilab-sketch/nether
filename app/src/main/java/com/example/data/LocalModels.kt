@@ -6,6 +6,17 @@ enum class ModelType {
     CHAT_LLM
 }
 
+/**
+ * Role of a line in the unified chat surface.
+ * Only USER and ASSISTANT messages are persisted; SYSTEM notices are
+ * session-only (init/security/inference logs) and never stored.
+ */
+enum class ChatRole {
+    USER,
+    ASSISTANT,
+    SYSTEM
+}
+
 data class AiModel(
     val id: String,
     val name: String,

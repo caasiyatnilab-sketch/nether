@@ -31,7 +31,7 @@ fun DashboardScreen(viewModel: LocalAiViewModel) {
     val isGpuEnabled by viewModel.isGpuEnabled.collectAsState()
     val ollamaUrl by viewModel.ollamaUrl.collectAsState()
     val cpuCoreCount by viewModel.cpuCoreCount.collectAsState()
-    val deviceRamGb by viewModel.availableDeviceRamGb.collectAsState()
+    val deviceRamGb by viewModel.deviceTotalRamGb.collectAsState()
     
     // Unpacker dialog / input state
     var showUnpackerDialog by remember { mutableStateOf(false) }
