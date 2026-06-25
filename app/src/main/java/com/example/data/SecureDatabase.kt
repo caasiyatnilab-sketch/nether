@@ -52,7 +52,9 @@ interface SecureDao {
 }
 
 // 4. Abstract Room Database
-@Database(entities = [EncryptedHistoryEntry::class, VectorDocument::class], version = 2, exportSchema = false)
+// version bumped 2 -> 3: encryption scheme changed (AES/ECB -> Keystore AES/GCM);
+// old ciphertext is undecryptable, so force a destructive migration of stale rows.
+@Database(entities = [EncryptedHistoryEntry::class, VectorDocument::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun secureDao(): SecureDao
 

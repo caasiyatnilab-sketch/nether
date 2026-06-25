@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.math.ceil
@@ -117,16 +118,19 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
         initializeAndroidKeystore()
         initializeHardwareInfo()
 
+        // Load persisted (encrypted) history once at startup and prepend it, rather than
+        // continuously collecting the DB flow -- which would wipe in-memory lines (user
+        // prompts, system logs) every time a model response is persisted.
         viewModelScope.launch {
-            repository.allMessages.collect { entries ->
-                terminalOutput.value = entries.map { entry ->
-                    val decrypted = LocalCryptoUtils.decrypt(entry.encryptedText, keyAlias)
-                    TerminalLine(
-                        sender = entry.sender,
-                        text = decrypted,
-                        timestamp = entry.timestamp
-                    )
-                }
+            val history = repository.allMessages.first().map { entry ->
+                TerminalLine(
+                    sender = entry.sender,
+                    text = LocalCryptoUtils.decrypt(entry.encryptedText, keyAlias),
+                    timestamp = entry.timestamp
+                )
+            }
+            if (history.isNotEmpty()) {
+                terminalOutput.value = history + terminalOutput.value
             }
         }
 
@@ -201,8 +205,9 @@ class LocalAiViewModel(application: Application) : AndroidViewModel(application)
                 delay(200)
 
                 val baseDir = getApplication<Application>().getExternalFilesDir("models")
+                    ?: throw IllegalStateException("External storage unavailable")
                 val fileName = model.name.replace(" ", "_").lowercase() + ".gguf"
-                val modelPath = "${baseDir?.absolutePath}/$fileName"
+                val modelPath = "${baseDir.absolutePath}/$fileName"
                 val contextSize = 2048
 
                 val success = LlamaCppNative.loadModel(modelPath, contextSize)
