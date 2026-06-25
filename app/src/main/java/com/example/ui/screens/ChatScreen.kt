@@ -1,12 +1,18 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -18,314 +24,114 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.ChatRole
 import com.example.viewmodel.LocalAiViewModel
 import com.example.viewmodel.TerminalLine
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+// Shared palette for the chat surface.
+private val ChatBg = Color(0xFF0F172A)        // slate-900
+private val ChatSurface = Color(0xFF1E293B)   // slate-800
+private val UserBubble = Color(0xFF0E7490)    // cyan-700
+private val AssistantBubble = Color(0xFF334155) // slate-700
+private val Accent = Color(0xFF22D3EE)        // cyan-400
+private val Violet = Color(0xFF8B5CF6)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(viewModel: LocalAiViewModel) {
-    val logs by viewModel.terminalOutput.collectAsState()
+    val lines by viewModel.terminalOutput.collectAsState()
     val isBusy by viewModel.isAgentBusy.collectAsState()
-    val encryptionKey by viewModel.encryptionKey.collectAsState()
     val masterKeyEnabled by viewModel.masterKeyEnabled.collectAsState()
-    
-    val clickedFile by viewModel.clickedFileSystem.collectAsState()
-    val clickedContact by viewModel.clickedContacts.collectAsState()
+    val models by viewModel.modelsState.collectAsState()
+    val selectedModelId by viewModel.selectedModelId.collectAsState()
+    val ragEnabled by viewModel.ragContextEnabled.collectAsState()
+    val ragUsed by viewModel.lastRagContextUsed.collectAsState()
 
     var textInput by remember { mutableStateOf("") }
+    var showSystem by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
-    val primaryBg = Color(0xFF0F172A) // slate-900 cosmic dark
-    val terminalBlack = Color(0xFF020617) // raw deeper black for prompt rows
-    val terminalAccent = Color(0xFF10B981) // active emerald prompt
-    val userAccent = Color(0xFF06B6D4) // user prompt cyan
+    val activeModel = models.firstOrNull { it.id == selectedModelId }
+    // What actually renders: conversation always, system notices only when expanded.
+    val visibleLines = remember(lines, showSystem) {
+        if (showSystem) lines else lines.filter { it.role != ChatRole.SYSTEM }
+    }
+    LaunchedEffect(visibleLines.size, isBusy) {
+        val target = visibleLines.size - 1 + if (isBusy) 1 else 0
+        if (target >= 0) listState.animateScrollToItem(target.coerceAtLeast(0))
+    }
 
-    // Auto-scroll when new logs arrive
-    LaunchedEffect(logs.size) {
-        if (logs.isNotEmpty()) {
-            listState.animateScrollToItem(logs.size - 1)
+    fun submit() {
+        if (textInput.isNotBlank() && !isBusy) {
+            viewModel.processLocalPrompt(textInput.trim())
+            textInput = ""
         }
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(primaryBg)
+            .background(ChatBg)
     ) {
-        // Top Security Information bar
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            shape = RoundedCornerShape(10.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = "Encrypted State",
-                        tint = if (masterKeyEnabled) terminalAccent else Color.Yellow,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text(
-                            text = "OFFLINE AES-128 CONTEXT ENCRYPTION",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Text(
-                            text = "Active Secret Hash: ..." + viewModel.encryptionKey.value.hashCode().toString(),
-                            fontSize = 10.sp,
-                            color = Color.White.copy(alpha = 0.5f),
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-                
-                IconButton(
-                    onClick = { viewModel.clearTerminalLog() },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .testTag("clear_history_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Clear Console",
-                        tint = Color.Red.copy(alpha = 0.8f),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-        }
+        ChatHeader(
+            modelName = activeModel?.name ?: "No model",
+            encrypted = masterKeyEnabled,
+            showSystem = showSystem,
+            onToggleSystem = { showSystem = !showSystem },
+            onClear = { viewModel.clearTerminalLog() }
+        )
 
-        // Terminal Output Logger Box
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(terminalBlack)
-                .border(BorderStroke(1.dp, Color(0xFF334155)), RoundedCornerShape(12.dp))
-        ) {
-            if (logs.isEmpty()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(24.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.List,
-                        contentDescription = "No Logs yet",
-                        tint = Color.White.copy(alpha = 0.15f),
-                        modifier = Modifier.size(54.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "Orchestrator Sandbox Ready",
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White.copy(alpha = 0.4f),
-                        fontSize = 14.sp
-                    )
-                    Text(
-                        text = "Attach sandboxed contexts and submit prompt matrices. True native llama.cpp execution is wrapped and monitored locally.",
-                        color = Color.White.copy(alpha = 0.3f),
-                        fontSize = 11.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(start = 12.dp, top = 4.dp, end = 12.dp)
-                    )
-                }
+        ModelSelectorRow(
+            models = models.map { it.id to it.name },
+            selectedId = selectedModelId,
+            onSelect = { viewModel.selectModel(it) }
+        )
+
+        // Conversation
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            if (visibleLines.isEmpty() && !isBusy) {
+                ChatEmptyState()
             } else {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(logs) { log ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    when (log.sender) {
-                                        "USER" -> Color(0xFF0F172A).copy(alpha = 0.6f)
-                                        else -> Color.Transparent
-                                    }
-                                )
-                                .padding(8.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(
-                                            when {
-                                                log.sender == "USER" -> userAccent.copy(alpha = 0.2f)
-                                                log.sender.contains("SYS") || log.sender.contains("NATIVE") -> Color.Green.copy(alpha = 0.2f)
-                                                else -> Color(0xFF8B5CF6).copy(alpha = 0.2f)
-                                            }
-                                        )
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        text = log.sender.uppercase(),
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = when {
-                                            log.sender == "USER" -> userAccent
-                                            log.sender.contains("SYS") || log.sender.contains("NATIVE") -> Color.Green
-                                            else -> Color(0xFFA78BFA)
-                                        }
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Offset: ${log.timestamp % 1000000}",
-                                    fontSize = 9.sp,
-                                    color = Color.White.copy(alpha = 0.3f),
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = log.text,
-                                fontSize = 13.sp,
-                                color = if (log.sender == "USER") Color.White else Color.White.copy(alpha = 0.85f),
-                                fontFamily = if (log.sender == "USER") FontFamily.Default else FontFamily.Monospace
-                            )
+                    items(visibleLines) { line ->
+                        when (line.role) {
+                            ChatRole.USER -> ChatBubble(line, isUser = true)
+                            ChatRole.ASSISTANT -> ChatBubble(line, isUser = false)
+                            ChatRole.SYSTEM -> SystemNotice(line)
                         }
                     }
-                    
                     if (isBusy) {
-                        item {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(top = 8.dp)
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    color = terminalAccent,
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Computing matrix weights locally...",
-                                    fontSize = 11.sp,
-                                    color = Color.Gray,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                        }
+                        item { TypingIndicator(activeModel?.name ?: "Assistant") }
                     }
                 }
             }
         }
 
-        // Active Context Prompt Attachments Selector
+        // RAG context toggle
+        RagContextBar(
+            enabled = ragEnabled,
+            usedTitles = ragUsed,
+            onToggle = { viewModel.toggleRagContext() }
+        )
+
+        // Composer
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            // File attachment toggle
-            Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .clickable { viewModel.toggleFileSystemContext() }
-                    .testTag("file_context_toggle"),
-                shape = RoundedCornerShape(8.dp),
-                color = if (clickedFile) Color(0xFF1E293B) else Color(0xFF334155).copy(alpha = 0.3f),
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = if (clickedFile) userAccent else Color.Transparent
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = "File Sandbox",
-                        tint = if (clickedFile) userAccent else Color.White.copy(alpha = 0.5f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "File Sandbox",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (clickedFile) Color.White else Color.White.copy(alpha = 0.7f),
-                        maxLines = 1
-                    )
-                }
-            }
-
-            // Contacts Index attachment toggle
-            Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .clickable { viewModel.toggleContactsContext() }
-                    .testTag("contacts_context_toggle"),
-                shape = RoundedCornerShape(8.dp),
-                color = if (clickedContact) Color(0xFF1E293B) else Color(0xFF334155).copy(alpha = 0.3f),
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = if (clickedContact) userAccent else Color.Transparent
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = "Contacts Index",
-                        tint = if (clickedContact) userAccent else Color.White.copy(alpha = 0.5f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Contacts",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (clickedContact) Color.White else Color.White.copy(alpha = 0.7f),
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-
-        // Bottom command controller
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp, bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 14.dp),
+            verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedTextField(
@@ -333,47 +139,298 @@ fun ChatScreen(viewModel: LocalAiViewModel) {
                 onValueChange = { textInput = it },
                 placeholder = {
                     Text(
-                        "Input local command context...",
+                        "Message ${activeModel?.name ?: "the assistant"}...",
                         color = Color.White.copy(alpha = 0.4f),
-                        fontSize = 13.sp
+                        fontSize = 14.sp
                     )
                 },
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = 48.dp)
+                    .heightIn(min = 52.dp, max = 140.dp)
                     .testTag("terminal_prompt_input"),
+                maxLines = 5,
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    focusedBorderColor = userAccent,
+                    focusedBorderColor = Accent,
                     unfocusedBorderColor = Color(0xFF334155),
-                    focusedContainerColor = terminalBlack,
-                    unfocusedContainerColor = terminalBlack
+                    focusedContainerColor = ChatSurface,
+                    unfocusedContainerColor = ChatSurface
                 ),
-                shape = RoundedCornerShape(10.dp)
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { submit() }),
+                shape = RoundedCornerShape(14.dp)
             )
-            
+
             Button(
-                onClick = {
-                    if (textInput.isNotBlank()) {
-                        viewModel.processLocalPrompt(textInput)
-                        textInput = ""
-                    }
-                },
+                onClick = { submit() },
+                enabled = textInput.isNotBlank() && !isBusy,
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(52.dp)
                     .testTag("submit_prompt_button"),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = userAccent),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Accent,
+                    disabledContainerColor = Color(0xFF334155)
+                ),
                 contentPadding = PaddingValues(0.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.Send,
-                    contentDescription = "Submit matrix pipeline",
-                    tint = Color.Black,
-                    modifier = Modifier.size(18.dp)
+                    contentDescription = "Send",
+                    tint = if (textInput.isNotBlank() && !isBusy) Color.Black else Color.White.copy(alpha = 0.4f),
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun ChatHeader(
+    modelName: String,
+    encrypted: Boolean,
+    showSystem: Boolean,
+    onToggleSystem: () -> Unit,
+    onClear: () -> Unit
+) {
+    Surface(color = ChatSurface, shadowElevation = 2.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Chat", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (encrypted) Icons.Default.Lock else Icons.Default.Warning,
+                        contentDescription = "Encryption state",
+                        tint = if (encrypted) Accent else Color.Yellow,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = if (encrypted) "End-to-end AES-256 (Keystore) · $modelName"
+                        else "Keystore unavailable · $modelName",
+                        fontSize = 11.sp,
+                        color = Color.White.copy(alpha = 0.6f),
+                        maxLines = 1
+                    )
+                }
+            }
+
+            // Toggle system log visibility
+            IconButton(
+                onClick = onToggleSystem,
+                modifier = Modifier.size(40.dp).testTag("toggle_system_log")
+            ) {
+                Icon(
+                    imageVector = if (showSystem) Icons.Default.Info else Icons.Default.List,
+                    contentDescription = "Toggle system log",
+                    tint = if (showSystem) Accent else Color.White.copy(alpha = 0.55f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(
+                onClick = onClear,
+                modifier = Modifier.size(40.dp).testTag("clear_history_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Clear conversation",
+                    tint = Color.Red.copy(alpha = 0.8f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelSelectorRow(
+    models: List<Pair<String, String>>,
+    selectedId: String,
+    onSelect: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        models.forEach { (id, name) ->
+            val selected = id == selectedId
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = if (selected) Accent else ChatSurface,
+                border = if (selected) null else BorderStroke(1.dp, Color(0xFF334155)),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .clickable { onSelect(id) }
+                    .testTag("model_chip_$id")
+            ) {
+                Text(
+                    text = name,
+                    fontSize = 12.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    color = if (selected) Color.Black else Color.White.copy(alpha = 0.85f),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatBubble(line: TerminalLine, isUser: Boolean) {
+    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+    ) {
+        if (!isUser) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp)) {
+                Icon(Icons.Default.Face, contentDescription = null, tint = Violet, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(line.sender, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFA78BFA))
+            }
+        }
+        Surface(
+            shape = RoundedCornerShape(
+                topStart = 14.dp,
+                topEnd = 14.dp,
+                bottomStart = if (isUser) 14.dp else 4.dp,
+                bottomEnd = if (isUser) 4.dp else 14.dp
+            ),
+            color = if (isUser) UserBubble else AssistantBubble,
+            modifier = Modifier.widthIn(max = 300.dp)
+        ) {
+            Text(
+                text = line.text,
+                fontSize = 14.sp,
+                color = Color.White,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+        }
+        Text(
+            text = timeFmt.format(Date(line.timestamp)),
+            fontSize = 9.sp,
+            color = Color.White.copy(alpha = 0.35f),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+        )
+    }
+}
+
+@Composable
+private fun SystemNotice(line: TerminalLine) {
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Text(
+            text = "${line.sender} · ${line.text}",
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            color = Color.White.copy(alpha = 0.45f),
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color.Black.copy(alpha = 0.3f))
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun TypingIndicator(modelName: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, top = 4.dp)) {
+        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Violet, strokeWidth = 2.dp)
+        Spacer(Modifier.width(8.dp))
+        Text("$modelName is thinking…", fontSize = 12.sp, color = Color.White.copy(alpha = 0.6f))
+    }
+}
+
+@Composable
+private fun RagContextBar(enabled: Boolean, usedTitles: List<String>, onToggle: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = if (enabled) Violet.copy(alpha = 0.18f) else ChatSurface,
+            border = BorderStroke(1.dp, if (enabled) Violet else Color(0xFF334155)),
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { onToggle() }
+                .testTag("rag_context_toggle")
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = null,
+                    tint = if (enabled) Violet else Color.White.copy(alpha = 0.5f),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "RAG context",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (enabled) Color.White else Color.White.copy(alpha = 0.7f)
+                    )
+                    Text(
+                        text = when {
+                            enabled && usedTitles.isNotEmpty() -> "Used: " + usedTitles.joinToString(", ")
+                            enabled -> "Injecting nearest indexed documents into prompts"
+                            else -> "Off — tap to ground replies in your indexed documents"
+                        },
+                        fontSize = 10.sp,
+                        color = Color.White.copy(alpha = 0.5f),
+                        maxLines = 1
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { onToggle() },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = Violet
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatEmptyState() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = Icons.Default.Email,
+            contentDescription = null,
+            tint = Color.White.copy(alpha = 0.15f),
+            modifier = Modifier.size(56.dp)
+        )
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "Start a conversation",
+            fontWeight = FontWeight.Bold,
+            color = Color.White.copy(alpha = 0.5f),
+            fontSize = 16.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Pick a model above and send a message. Replies run on-device and are encrypted at rest. Enable RAG to ground answers in your indexed documents.",
+            color = Color.White.copy(alpha = 0.35f),
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center
+        )
     }
 }

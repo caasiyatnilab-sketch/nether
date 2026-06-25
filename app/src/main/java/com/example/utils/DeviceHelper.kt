@@ -14,7 +14,7 @@ object DeviceHelper {
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
         activityManager.getMemoryInfo(memInfo)
-        return (memInfo.totalMemory / (1024f * 1024f * 1024f)).toFloat()
+        return (memInfo.totalMem / (1024f * 1024f * 1024f)).toFloat()
     }
 
     /**
@@ -39,34 +39,32 @@ object DeviceHelper {
             totalRam >= 12f -> {
                 // Flagship: Can handle heavy models
                 listOf(
-                    "llama_3_2_3b",      // Primary recommendation
-                    "qwen2_3b",
-                    "phi_2_2_7b",
-                    "gemma_2b",
-                    "tinyllama_1_1b"
+                    "llama3_8b_instruct", // Primary recommendation
+                    "phi3_3.8b_mini",
+                    "deepseek_r1_1.5b",
+                    "qwen2.5_coder_1.5b"
                 )
             }
             totalRam >= 8f -> {
                 // Mid-high range: Balanced models
                 listOf(
-                    "llama_3_2_3b",      // Primary recommendation
-                    "qwen2_3b",
-                    "phi_2_2_7b",
-                    "gemma_2b",
-                    "tinyllama_1_1b"
+                    "phi3_3.8b_mini",     // Primary recommendation
+                    "deepseek_r1_1.5b",
+                    "qwen2.5_coder_1.5b",
+                    "llama3_8b_instruct"
                 )
             }
             totalRam >= 6f -> {
                 // Mid-range: Conservative selection
                 listOf(
-                    "gemma_2b",          // Primary recommendation
-                    "phi_2_2_7b",
-                    "tinyllama_1_1b"
+                    "phi3_3.8b_mini",     // Primary recommendation
+                    "deepseek_r1_1.5b",
+                    "qwen2.5_coder_1.5b"
                 )
             }
             else -> {
                 // Budget: Ultra-light only
-                listOf("tinyllama_1_1b")
+                listOf("deepseek_r1_1.5b", "qwen2.5_coder_1.5b")
             }
         }
     }

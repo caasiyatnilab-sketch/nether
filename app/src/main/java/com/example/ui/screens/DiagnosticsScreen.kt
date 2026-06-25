@@ -452,7 +452,7 @@ fun LoraTuningView(viewModel: LocalAiViewModel, cardColor: Color, themeColor: Co
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("lora_train_button"),
                         colors = ButtonDefaults.buttonColors(containerColor = themeColor)
                     ) {
-                        Text("Offload & Commene LoRA Tuning", fontWeight = FontWeight.Bold)
+                        Text("Offload & Commence LoRA Tuning", fontWeight = FontWeight.Bold)
                     }
                 }
             }

@@ -8,8 +8,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -93,11 +93,11 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.testTag("nav_item_orchestrator"),
                                 icon = {
                                     Icon(
-                                        imageVector = Icons.Default.List,
-                                        contentDescription = "Orchestrator Terminal"
+                                        imageVector = Icons.Default.Email,
+                                        contentDescription = "Chat"
                                     )
                                 },
-                                label = { Text("Terminal", fontSize = 11.sp) },
+                                label = { Text("Chat", fontSize = 11.sp) },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = Color(0xFF38BDF8),
                                     unselectedIconColor = Color.White.copy(alpha = 0.4f),
